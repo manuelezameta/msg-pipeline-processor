@@ -23,7 +23,7 @@ app:
   aws:
     # Región de AWS donde están desplegados los servicios
     # En Lambda: la variable AWS_REGION la inyecta el runtime automáticamente
-    region: ${AWS_REGION:us-east-1}
+    region: ${AWS_REGION_NAME:us-east-1}
 
     # Nombre de la tabla DynamoDB donde se persisten los mensajes
     # En Lambda: configurar como variable de entorno DYNAMODB_TABLE_NAME
