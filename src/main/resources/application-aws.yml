@@ -1,0 +1,33 @@
+# =============================================================================
+# application-aws.yml — Perfil de producción (AWS Lambda)
+# =============================================================================
+#
+# Este perfil lo activa SqsHandler.java en el bloque static:
+#   SpringApplicationBuilder.profiles("aws")
+#
+# En este perfil:
+#   ✅ Sin servidor web (WebApplicationType.NONE en SqsHandler)
+#   ✅ DynamoDB real via AWS SDK v2
+#   ✅ SNS real via AWS SDK v2 (Sesión 04 — NUEVO)
+#   ✅ Credenciales via IAM Role del Lambda (sin access keys hardcodeadas)
+#   ❌ Swagger UI desactivado (no hay servidor HTTP)
+#
+# VARIABLES DE ENTORNO requeridas en la consola Lambda:
+#   DYNAMODB_TABLE_NAME = msg-pipeline-messages
+#   SNS_TOPIC_ARN       = arn:aws:sns:us-east-1:{accountId}:msg-pipeline-email-notifications
+#   AWS_REGION          = us-east-1  (la inyecta Lambda automáticamente)
+# =============================================================================
+
+spring:
+  main:
+    # NONE: no arranca servidor web — crucial para no desperdiciar
+    # memoria y tiempo de inicio en Lambda.
+    web-application-type: none
+    # Permite que Spring Boot arranque en un contexto sin servidor web
+    allow-bean-definition-overriding: false
+
+# En Lambda los logs van a CloudWatch Logs automáticamente
+logging:
+  level:
+    com.msgpipeline: INFO
+    software.amazon.awssdk: WARN

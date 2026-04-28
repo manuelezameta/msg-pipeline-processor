@@ -1,0 +1,161 @@
+// =============================================================================
+// build.gradle — msg-pipeline-processor (Sesión 04)
+// =============================================================================
+//
+// ARQUITECTURA: Hexagonal (Ports & Adapters) + Clean Architecture
+//
+// CAMBIOS EN SESIÓN 04 respecto a Sesión 03:
+//   + software.amazon.awssdk:sns  → publicar notificaciones de procesamiento
+//   + NotificationPort            → nuevo puerto de salida para notificaciones
+//   + SnsNotificationAdapter      → implementación SNS (perfil 'aws')
+//   + InMemoryNotificationAdapter → implementación local (perfil 'local')
+//   + ProcessMessageUseCase       → notifica tras persistir en DynamoDB
+//
+// DECISIÓN: ¿Por qué Spring Boot si es un Lambda?
+//   Spring Boot nos da Inversión de Dependencias (DI), gestión de perfiles
+//   y configuración centralizada. Para Lambda, el contexto Spring arranca
+//   UNA VEZ en el cold start (bloque static del Handler) y se reutiliza
+//   en invocaciones warm — sin servidor web.
+//   Para desarrollo local, arranca como app web normal con Swagger UI.
+//
+// TAREAS CLAVE:
+//   ./gradlew bootRun --args='--spring.profiles.active=local'  → dev local
+//   ./gradlew clean buildZip                                    → deploy Lambda
+//
+// =============================================================================
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.0'
+    id 'io.spring.dependency-management' version '1.1.5'
+}
+
+group   = 'com.msgpipeline'
+version = '1.0.0'
+
+// Java 17 — LTS, requerido por Spring Boot 3.x
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+configurations {
+    // Hace que @CompileOnly (Lombok) herede los procesadores de anotaciones
+    compileOnly { extendsFrom annotationProcessor }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+
+    // ─── Spring Boot Core ────────────────────────────────────────────────────
+    // spring-boot-starter: contexto IoC, gestión de beans, perfiles.
+    // Para Lambda solo necesitamos el contenedor DI, NO el servidor web.
+    implementation 'org.springframework.boot:spring-boot-starter'
+
+    // spring-boot-starter-web: servidor Tomcat embebido + MVC.
+    // Se usa ÚNICAMENTE con el perfil 'local' (desarrollo).
+    // En Lambda, desactivamos el servidor web con WebApplicationType.NONE.
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // Validación de DTOs con anotaciones (@NotBlank, @Email, etc.)
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ─── SpringDoc OpenAPI — Swagger UI ──────────────────────────────────────
+    // Genera documentación interactiva automáticamente a partir de anotaciones.
+    // Disponible en http://localhost:8082/swagger-ui.html (perfil local)
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+
+    // ─── AWS Lambda ──────────────────────────────────────────────────────────
+    // aws-lambda-java-core: interfaz RequestHandler<INPUT, OUTPUT> y Context.
+    // aws-lambda-java-events: modelos de eventos (SQSEvent, SQSMessage).
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.3'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.11.4'
+
+    // ─── AWS SDK v2 ──────────────────────────────────────────────────────────
+    // BOM (Bill of Materials): centraliza versiones de todos los módulos SDK v2.
+    // Con esto no necesitas especificar versión en cada módulo individual.
+    implementation platform('software.amazon.awssdk:bom:2.25.40')
+
+    // DynamoDB: persistencia de los mensajes procesados (Sesión 03)
+    implementation 'software.amazon.awssdk:dynamodb'
+
+    // SNS: publicar notificaciones de procesamiento completado (Sesión 04 — NUEVO)
+    // Patrón Observer: SNS actúa como bus de eventos. El procesador publica;
+    // los suscriptores (email, SMS, Lambda) reaccionan sin que el procesador lo sepa.
+    implementation 'software.amazon.awssdk:sns'
+
+    // ─── Utilidades ──────────────────────────────────────────────────────────
+    // Jackson: serialización/deserialización JSON del body del mensaje SQS.
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    // Lombok: reduce código repetitivo (@Data, @Builder, @Slf4j, etc.)
+    compileOnly    'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // ─── Tests ───────────────────────────────────────────────────────────────
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+// ─── Configuración del JAR ───────────────────────────────────────────────────
+//
+// PROBLEMA con Spring Boot fat JAR (bootJar):
+//   bootJar empaqueta las clases bajo BOOT-INF/classes/ dentro del JAR.
+//   Lambda busca las clases en la RAÍZ del JAR, no en BOOT-INF/classes/.
+//   → Handler 'com.msgpipeline.processor.SqsHandler' no se encontraría.
+//
+// SOLUCIÓN: desactivar bootJar y usar buildZip (formato ZIP oficial de Lambda)
+//
+bootJar { enabled = false }  // Desactivar Spring Boot fat JAR
+jar     { enabled = true  }  // Activar JAR plano (clases en raíz)
+
+// ─── buildZip — Formato ZIP oficial para AWS Lambda Java ─────────────────────
+//
+// AWS Lambda acepta dos formatos de despliegue para Java:
+//   1. JAR plano (fat JAR): todas las clases y deps en un solo JAR
+//   2. ZIP con lib/: clases en raíz + JARs de dependencias en lib/
+//
+// El formato ZIP con lib/ es el RECOMENDADO por AWS porque:
+//   • Las dependencias NO se descomprimen → carga más rápida en cold start
+//   • El ZIP resultante es más pequeño que un fat JAR
+//   • Lambda's class loader carga los JARs de lib/ automáticamente
+//
+// Estructura del ZIP generado:
+//   msg-pipeline-processor-lambda.zip
+//   ├── com/msgpipeline/processor/SqsHandler.class    ← tus clases
+//   ├── com/msgpipeline/processor/domain/...
+//   └── lib/
+//       ├── spring-boot-3.5.0.jar                     ← dependencias intactas
+//       ├── aws-lambda-java-core-1.2.3.jar
+//       └── ...
+//
+// Handler a configurar en Lambda:
+//   com.msgpipeline.processor.SqsHandler::handleRequest
+//
+tasks.register('buildZip', Zip) {
+    group       = 'build'
+    description = 'Genera el ZIP de despliegue para AWS Lambda (clases en raíz + deps en lib/)'
+
+    archiveFileName      = 'msg-pipeline-processor-lambda.zip'
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    // Compilar antes de empaquetar
+    dependsOn compileJava, processResources
+
+    // 1. Las CLASES del proyecto van en la RAÍZ del ZIP
+    from sourceSets.main.output
+
+    // 2. Las DEPENDENCIAS van en la carpeta lib/ (sin descomprimir)
+    into('lib') {
+        from configurations.runtimeClasspath
+    }
+}
+
+// Que 'build' también ejecute 'buildZip'
+build.dependsOn buildZip
+
+test {
+    useJUnitPlatform()
+}
