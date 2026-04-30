@@ -1,0 +1,117 @@
+// =============================================================================
+// build.gradle — msg-pipeline-processor-sesion-05
+// =============================================================================
+//
+// ARQUITECTURA: Hexagonal (Ports & Adapters) + Clean Architecture
+//
+// CAMBIOS EN SESIÓN 05 respecto a Sesión 04:
+//   + Trigger cambiado: SQS → API Gateway (Lambda Proxy directo)
+//   + EventBridge: publicación de eventos de dominio (patrón Observer)
+//   + EventPublisherPort: nuevo puerto de salida para EventBridge
+//   + EventBridgeAdapter: implementación real (perfil 'aws')
+//   + InMemoryEventAdapter: implementación local (perfil 'local')
+//   + Handler cambiado: SQSEvent → APIGatewayProxyRequestEvent / APIGatewayProxyResponseEvent
+//
+// FLUJO NUEVO:
+//   Postman → POST /messages-s5 → API Gateway → Lambda (Processor)
+//   Lambda → DynamoDB (PENDING) + EventBridge → Audit Lambda
+//
+// TAREAS CLAVE:
+//   ./gradlew bootRun --args='--spring.profiles.active=local'  → dev local
+//   ./gradlew clean buildZip                                    → deploy Lambda
+//
+// =============================================================================
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.0'
+    id 'io.spring.dependency-management' version '1.1.5'
+}
+
+group   = 'com.msgpipeline'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+configurations {
+    compileOnly { extendsFrom annotationProcessor }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+
+    // ─── Spring Boot Core ────────────────────────────────────────────────────
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ─── SpringDoc OpenAPI — Swagger UI ──────────────────────────────────────
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+
+    // ─── AWS Lambda ──────────────────────────────────────────────────────────
+    // aws-lambda-java-core: RequestHandler, Context
+    // aws-lambda-java-events: APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.3'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.11.4'
+
+    // ─── AWS SDK v2 ──────────────────────────────────────────────────────────
+    implementation platform('software.amazon.awssdk:bom:2.25.40')
+
+    // DynamoDB: guardar mensajes con status PENDING
+    implementation 'software.amazon.awssdk:dynamodb'
+
+    // EventBridge: publicar eventos de dominio (patrón Observer) — NUEVO Sesión 05
+    // EventBridgeClient.putEvents() → msg-pipeline-events-sesion-05
+    implementation 'software.amazon.awssdk:eventbridge'
+
+    // ─── Utilidades ──────────────────────────────────────────────────────────
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    compileOnly    'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // ─── Tests ───────────────────────────────────────────────────────────────
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+// ─── Configuración del JAR ───────────────────────────────────────────────────
+bootJar { enabled = false }
+jar     { enabled = true  }
+
+// ─── buildZip — Formato ZIP oficial para AWS Lambda Java ─────────────────────
+//
+// Estructura del ZIP generado:
+//   msg-pipeline-processor-sesion-05-lambda.zip
+//   ├── com/msgpipeline/processor/ProcessorHandler.class
+//   └── lib/  ← JARs de dependencias sin descomprimir
+//
+// Handler a configurar en Lambda:
+//   com.msgpipeline.processor.ProcessorHandler::handleRequest
+//
+tasks.register('buildZip', Zip) {
+    group       = 'build'
+    description = 'Genera el ZIP de despliegue para AWS Lambda (clases en raíz + deps en lib/)'
+
+    archiveFileName      = 'msg-pipeline-processor-sesion-05-lambda.zip'
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    dependsOn compileJava, processResources
+
+    from sourceSets.main.output
+
+    into('lib') {
+        from configurations.runtimeClasspath
+    }
+}
+
+build.dependsOn buildZip
+
+test {
+    useJUnitPlatform()
+}

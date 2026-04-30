@@ -1,0 +1,27 @@
+# =============================================================================
+# application-local.yml — Perfil de desarrollo local
+# =============================================================================
+#
+# Activar con: ./gradlew bootRun --args='--spring.profiles.active=local'
+#
+# En este perfil:
+#   ✅ Servidor Tomcat activo (puerto 8083)
+#   ✅ Swagger UI: http://localhost:8083/swagger-ui.html
+#   ✅ InMemoryMessageRepository (sin DynamoDB real)
+#   ✅ InMemoryEventAdapter (sin EventBridge real — simula la publicación)
+#   ✅ Logs DEBUG para debugging
+#   ❌ Sin conexión a AWS
+# =============================================================================
+
+spring:
+  main:
+    web-application-type: servlet
+
+server:
+  port: 8083
+
+logging:
+  level:
+    com.msgpipeline: DEBUG
+    org.springframework: INFO
+    software.amazon.awssdk: OFF

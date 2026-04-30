@@ -1,0 +1,25 @@
+# =============================================================================
+# application-aws.yml — Perfil AWS Lambda (msg-pipeline-processor-sesion-05)
+# =============================================================================
+#
+# Activado en ProcessorHandler.java:
+#   SpringApplicationBuilder.profiles("aws")
+#
+# VARIABLES DE ENTORNO REQUERIDAS EN LA CONSOLA LAMBDA:
+#   DYNAMODB_TABLE_NAME = msg-pipeline-messages
+#   EVENT_BUS_NAME      = msg-pipeline-events-sesion-05
+#   AWS_REGION          = us-east-1 (Lambda la inyecta automáticamente)
+# =============================================================================
+
+spring:
+  main:
+    # SERVLET: requerido para el procesamiento de API Gateway proxy
+    # Spring Boot 3.5 requiere contexto SERVLET para manejar requests HTTP
+    # sin este valor aparece ClassCastException con los filtros de Spring
+    web-application-type: servlet
+    allow-bean-definition-overriding: false
+
+logging:
+  level:
+    com.msgpipeline: INFO
+    software.amazon.awssdk: WARN
