@@ -1,0 +1,11 @@
+# =============================================================================
+# application-local.yml — Perfil local (msg-pipeline-processor-sesion-06)
+# =============================================================================
+spring:
+  main:
+    web-application-type: none
+
+logging:
+  level:
+    com.msgpipeline: DEBUG
+    software.amazon.awssdk: OFF

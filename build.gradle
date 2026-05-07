@@ -1,0 +1,120 @@
+// =============================================================================
+// build.gradle — msg-pipeline-processor-sesion-06
+// =============================================================================
+//
+// ARQUITECTURA: Hexagonal (Ports & Adapters) + Clean Architecture
+//
+// ROL EN SESIÓN 06:
+//   El Processor Lambda es invocado DIRECTAMENTE por Step Functions como
+//   tarea (Task state "InvocarLambda"). Recibe el input de la State Machine,
+//   persiste el mensaje en DynamoDB con status=PENDING y publica
+//   la notificación en SNS.
+//
+// DIFERENCIA CON SESIÓN 05:
+//   Sesión 05: Processor era invocado por API Gateway (HTTP Proxy)
+//   Sesión 06: Processor es invocado por Step Functions (Task input JSON)
+//              Input: Map<String, Object> con los datos del mensaje
+//              Output: Resultado devuelto a Step Functions (SUCCEEDED/FAILED)
+//
+// FLUJO SESIÓN 06:
+//   Step Functions → InvocarLambda → ProcessorHandler
+//   → DynamoDB PutItem (status=PENDING)
+//   → SNS Publish (email de notificacion)
+//   → Retorna resultado a Step Functions
+//
+// HANDLER LAMBDA:
+//   com.msgpipeline.processor.ProcessorHandler::handleRequest
+//
+// TAREAS GRADLE:
+//   ./gradlew bootRun --args='--spring.profiles.active=local'  → dev local
+//   ./gradlew clean buildZip                                    → deploy Lambda
+//
+// =============================================================================
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.0'
+    id 'io.spring.dependency-management' version '1.1.5'
+}
+
+group   = 'com.msgpipeline'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+configurations {
+    compileOnly { extendsFrom annotationProcessor }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+
+    // ─── Spring Boot Core ────────────────────────────────────────────────────
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // ─── SpringDoc OpenAPI ───────────────────────────────────────────────────
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+
+    // ─── AWS Lambda ──────────────────────────────────────────────────────────
+    // aws-lambda-java-core: RequestHandler, Context
+    // Step Functions invoca el Lambda con Map<String, Object> como input
+    implementation 'com.amazonaws:aws-lambda-java-core:1.2.3'
+    implementation 'com.amazonaws:aws-lambda-java-events:3.11.4'
+
+    // ─── AWS SDK v2 ──────────────────────────────────────────────────────────
+    implementation platform('software.amazon.awssdk:bom:2.25.40')
+
+    // DynamoDB: PutItem con status=PENDING
+    implementation 'software.amazon.awssdk:dynamodb'
+
+    // SNS: Publish notificacion de mensaje procesado
+    implementation 'software.amazon.awssdk:sns'
+
+    // ─── Utilidades ──────────────────────────────────────────────────────────
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    compileOnly    'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // ─── Tests ───────────────────────────────────────────────────────────────
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.mockito:mockito-core'
+}
+
+bootJar { enabled = false }
+jar     { enabled = true  }
+
+// ─── buildZip — Formato ZIP oficial para AWS Lambda Java ─────────────────────
+//
+// Handler a configurar en Lambda Console:
+//   com.msgpipeline.processor.ProcessorHandler::handleRequest
+//
+tasks.register('buildZip', Zip) {
+    group       = 'build'
+    description = 'Genera el ZIP de despliegue para AWS Lambda (clases en raiz + deps en lib/)'
+
+    archiveFileName      = 'msg-pipeline-processor-sesion-06-lambda.zip'
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+
+    dependsOn compileJava, processResources
+
+    from sourceSets.main.output
+
+    into('lib') {
+        from configurations.runtimeClasspath
+    }
+}
+
+build.dependsOn buildZip
+
+test {
+    useJUnitPlatform()
+}

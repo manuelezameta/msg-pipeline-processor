@@ -1,0 +1,20 @@
+# =============================================================================
+# application-aws.yml — Perfil AWS Lambda (msg-pipeline-processor-sesion-06)
+# =============================================================================
+#
+# VARIABLES DE ENTORNO REQUERIDAS EN LAMBDA:
+#   DYNAMODB_TABLE_NAME = msg-pipeline-messages
+#   SNS_TOPIC_ARN       = arn:aws:sns:us-east-1:ACCOUNT:msg-pipeline-email-notifications-sesion-06
+# =============================================================================
+
+spring:
+  main:
+    # NONE: el Processor Lambda no necesita servidor web
+    # Solo recibe eventos de Step Functions — no hay requests HTTP
+    web-application-type: none
+    allow-bean-definition-overriding: false
+
+logging:
+  level:
+    com.msgpipeline: INFO
+    software.amazon.awssdk: WARN
