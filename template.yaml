@@ -15,6 +15,7 @@
 #
 # REGLA DE NOMENCLATURA: Todos los recursos físicos incluyen el sufijo "-sesion-08"
 #
+#
 # DESPLIEGUE MANUAL (primera vez):
 #   sam build
 #   sam deploy --guided
@@ -47,8 +48,6 @@ Parameters:
 # =============================================================================
 # GLOBALS — configuración compartida por todas las funciones Lambda
 # =============================================================================
-# SAM nos permite definir propiedades comunes una sola vez aquí.
-# Evita duplicar Timeout, MemorySize, etc. en cada función.
 Globals:
   Function:
     # Java + Spring Boot tienen Cold Start lento (~5-15s la primera vez).
@@ -59,14 +58,12 @@ Globals:
     # 512 MB es el mínimo recomendado para Spring Boot en Lambda.
     # Con menos memoria, el JVM tiene poco espacio → Cold Start más lento
     # y posibles OutOfMemoryError.
-    # Referencia: AWS recomienda >= 512 MB para apps Spring Boot.
     MemorySize: 512
 
     # Runtime de Java 17 (LTS compatible con Spring Boot 3.5)
     Runtime: java17
 
     # Arquitectura ARM64 (Graviton2): hasta 20% más rápido y 20% más barato que x86_64
-    # Spring Boot 3.x + Java 17 son totalmente compatibles con ARM64.
     Architectures:
       - arm64
 
@@ -82,117 +79,22 @@ Globals:
 Resources:
 
   # ---------------------------------------------------------------------------
-  # 1. DynamoDB — Tabla de mensajes
+  # 1. IAM Role para que API Gateway escriba logs en CloudWatch
   # ---------------------------------------------------------------------------
-  # CONCEPTO: DynamoDB es una base de datos NoSQL totalmente administrada.
-  # No hay servidores que gestionar. AWS gestiona la disponibilidad,
-  # el escalado y la replicación automáticamente.
+  # CONCEPTO: API Gateway necesita un rol IAM para poder escribir en CloudWatch
+  # Logs. Este rol debe configurarse UNA vez a nivel de cuenta mediante el
+  # recurso AWS::ApiGateway::Account. Sin esta configuración, cualquier Stage
+  # que intente activar logging falla con "CloudWatch Logs role ARN must be set".
   #
-  # IMPORTANTE: Creamos una tabla NUEVA con sufijo -sesion-08 para no
-  # interferir con las tablas de sesiones anteriores del curso.
+  # LECCIÓN APRENDIDA DEL ERROR:
+  #   El error original fue: MethodSettings con LoggingLevel: INFO en el Stage
+  #   sin haber configurado este rol a nivel de cuenta. CloudFormation detecta
+  #   la inconsistencia y falla con ROLLBACK_COMPLETE.
   # ---------------------------------------------------------------------------
-  MsgPipelineMessageTableSesion08:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      # Nombre físico del recurso en AWS — sufijo -sesion-08 obligatorio
-      TableName: msg-pipeline-messages-sesion-08
-
-      # Modo de facturación PAY_PER_REQUEST:
-      # No hay capacidad provisionada. AWS escala automáticamente.
-      # Perfecto para cargas variables y desarrollo (pagas solo por lo que usas).
-      BillingMode: PAY_PER_REQUEST
-
-      # Definición del esquema de la tabla
-      # DynamoDB es schemaless: solo el PK necesita estar definido aquí.
-      # Los demás atributos se agregan dinámicamente en el PutItem.
-      AttributeDefinitions:
-        - AttributeName: messageId
-          AttributeType: S  # S = String
-
-      # Partition Key (clave primaria simple)
-      # messageId es suficiente para identificar un mensaje unívocamente.
-      KeySchema:
-        - AttributeName: messageId
-          KeyType: HASH  # HASH = Partition Key
-
-      # TTL: DynamoDB elimina automáticamente los ítems cuyo campo 'ttl'
-      # (en segundos Unix epoch) sea menor al tiempo actual.
-      # Esto evita que la tabla crezca indefinidamente.
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-
-  # ---------------------------------------------------------------------------
-  # 2. SQS — Dead Letter Queue (DLQ)
-  # ---------------------------------------------------------------------------
-  # CONCEPTO: La DLQ captura los mensajes que no pudieron procesarse
-  # después de N reintentos. Es esencial para:
-  #   - No perder mensajes que fallaron
-  #   - Diagnosticar errores en producción
-  #   - Re-procesar mensajes después de corregir el bug
-  #
-  # ORDEN: La DLQ debe crearse ANTES de la cola principal porque
-  # la cola principal referencia la DLQ en su RedrivePolicy.
-  # ---------------------------------------------------------------------------
-  MsgPipelineDLQSesion08:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: msg-pipeline-dlq-sesion-08
-
-      # Los mensajes en la DLQ se retienen 14 días (máximo de SQS)
-      # para dar tiempo al equipo de analizar y re-procesar los fallos.
-      MessageRetentionPeriod: 1209600  # 14 días en segundos (14 * 24 * 3600)
-
-  # ---------------------------------------------------------------------------
-  # 3. SQS — Cola principal
-  # ---------------------------------------------------------------------------
-  # CONCEPTO: SQS desacopla el API Gateway del Lambda.
-  # Ventajas del desacoplamiento:
-  #   - API Gateway responde inmediatamente (202 Accepted) sin esperar al Lambda
-  #   - Si Lambda falla, el mensaje se reintenta automáticamente
-  #   - Lambda puede procesar mensajes en batch para eficiencia
-  # ---------------------------------------------------------------------------
-  MsgPipelineQueueSesion08:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: msg-pipeline-queue-sesion-08
-
-      # VisibilityTimeout: tiempo que el mensaje "desaparece" de la cola
-      # mientras Lambda lo procesa. Debe ser >= Timeout de Lambda.
-      # Si Lambda tarda más, el mensaje vuelve a ser visible → reintento duplicado.
-      # Regla: VisibilityTimeout >= 6 * Lambda.Timeout
-      # 60s * 6 = 360s. Usamos 360s para estar seguros.
-      VisibilityTimeout: 360
-
-      # Retención de mensajes: 4 días (tiempo para corregir errores)
-      MessageRetentionPeriod: 345600  # 4 días en segundos
-
-      # RedrivePolicy: define el comportamiento de reintentos y la DLQ
-      RedrivePolicy:
-        # ARN de la DLQ donde van los mensajes que fallan
-        deadLetterTargetArn: !GetAtt MsgPipelineDLQSesion08.Arn
-
-        # maxReceiveCount: número máximo de intentos fallidos antes de
-        # mover el mensaje a la DLQ. Con 3, si el Lambda falla 3 veces
-        # consecutivas, el mensaje va a la DLQ para análisis.
-        maxReceiveCount: 3
-
-  # ---------------------------------------------------------------------------
-  # 4. IAM Role — Permisos para API Gateway → SQS
-  # ---------------------------------------------------------------------------
-  # CONCEPTO: En AWS, NINGÚN servicio puede hacer nada sin permisos explícitos.
-  # Principio de Menor Privilegio: solo dar los permisos estrictamente necesarios.
-  #
-  # Este Role permite que API Gateway llame a SQS:SendMessage.
-  # Sin este Role, API Gateway no podría enviar mensajes a SQS.
-  # ---------------------------------------------------------------------------
-  ApiGatewaySQSRoleSesion08:
+  ApiGatewayCloudWatchRoleSesion08:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: msg-pipeline-apigw-sqs-role-sesion-08
-
-      # AssumeRolePolicyDocument: define QUIÉN puede asumir este rol.
-      # Solo el servicio apigateway.amazonaws.com puede usarlo.
+      RoleName: msg-pipeline-apigw-cw-role-sesion-08
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -200,8 +102,90 @@ Resources:
             Principal:
               Service: apigateway.amazonaws.com
             Action: sts:AssumeRole
+      # AmazonAPIGatewayPushToCloudWatchLogs: política administrada de AWS
+      # que otorga a API Gateway los permisos necesarios para escribir logs
+      # en CloudWatch (CreateLogGroup, CreateLogStream, PutLogEvents, etc.)
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
 
-      # Políticas inline: permisos que tiene este rol
+  # ---------------------------------------------------------------------------
+  # 2. Configuración de cuenta de API Gateway — CloudWatch Logs Role
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: AWS::ApiGateway::Account es un recurso singleton (uno por cuenta
+  # y región). Vincula el rol IAM con la configuración global de API Gateway,
+  # permitiendo que cualquier Stage active logging sin error.
+  #
+  # IMPORTANTE: Si ya existe una configuración de cuenta previa, este recurso
+  # la SOBRESCRIBE. En el contexto del curso, esto es seguro porque el rol
+  # que asignamos tiene exactamente los permisos necesarios.
+  # ---------------------------------------------------------------------------
+  ApiGatewayAccountConfigSesion08:
+    Type: AWS::ApiGateway::Account
+    DependsOn: ApiGatewayCloudWatchRoleSesion08
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRoleSesion08.Arn
+
+  # ---------------------------------------------------------------------------
+  # 3. DynamoDB — Tabla de mensajes
+  # ---------------------------------------------------------------------------
+  MsgPipelineMessageTableSesion08:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: msg-pipeline-messages-sesion-08
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: messageId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: messageId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 4. SQS — Dead Letter Queue (DLQ)
+  # ---------------------------------------------------------------------------
+  # ORDEN: La DLQ debe crearse ANTES de la cola principal porque
+  # la cola principal referencia la DLQ en su RedrivePolicy.
+  # ---------------------------------------------------------------------------
+  MsgPipelineDLQSesion08:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: msg-pipeline-dlq-sesion-08
+      # Los mensajes en la DLQ se retienen 14 días para análisis y re-procesamiento.
+      MessageRetentionPeriod: 1209600  # 14 días en segundos
+
+  # ---------------------------------------------------------------------------
+  # 5. SQS — Cola principal
+  # ---------------------------------------------------------------------------
+  MsgPipelineQueueSesion08:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: msg-pipeline-queue-sesion-08
+      # VisibilityTimeout >= 6 * Lambda.Timeout (best practice AWS)
+      # 60s * 6 = 360s
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600  # 4 días en segundos
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MsgPipelineDLQSesion08.Arn
+        # Después de 3 fallos consecutivos → mensaje va a la DLQ
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # 6. IAM Role — Permisos para API Gateway → SQS
+  # ---------------------------------------------------------------------------
+  ApiGatewaySQSRoleSesion08:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: msg-pipeline-apigw-sqs-role-sesion-08
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: AllowSQSSendMessage
           PolicyDocument:
@@ -209,22 +193,11 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - sqs:SendMessage  # Solo SendMessage — principio de menor privilegio
+                  - sqs:SendMessage
                 Resource: !GetAtt MsgPipelineQueueSesion08.Arn
 
   # ---------------------------------------------------------------------------
-  # 5. API Gateway — REST API con integración nativa a SQS
-  # ---------------------------------------------------------------------------
-  # CONCEPTO: Integración Directa (AWS Service Integration)
-  # En lugar de Lambda → SQS, usamos API Gateway → SQS directamente.
-  # Ventajas:
-  #   - Elimina la Lambda intermediaria (reduce costos y latencia)
-  #   - API Gateway maneja la autenticación, throttling y CORS
-  #   - Menos puntos de fallo en la arquitectura
-  #
-  # ESTRUCTURA SAM para REST API con integración SQS:
-  # AWS::Serverless::Api no soporta directamente la integración AWS Service,
-  # por lo que usamos AWS::ApiGateway::* recursos nativos de CloudFormation.
+  # 7. API Gateway — REST API con integración nativa a SQS
   # ---------------------------------------------------------------------------
   MsgPipelineApiSesion08:
     Type: AWS::ApiGateway::RestApi
@@ -251,31 +224,18 @@ Resources:
       ResourceId: !Ref MsgPipelineApiResourceSesion08
       HttpMethod: POST
       AuthorizationType: NONE
-
-      # Integración tipo AWS: llama directamente a un servicio AWS (SQS)
       Integration:
         Type: AWS
         IntegrationHttpMethod: POST
-        # URI del endpoint SQS para enviar mensajes
-        # Formato: arn:aws:apigateway:{region}:sqs:path/{accountId}/{queueName}
         Uri: !Sub
           - arn:aws:apigateway:${AWS::Region}:sqs:path/${AWS::AccountId}/${QueueName}
           - QueueName: !GetAtt MsgPipelineQueueSesion08.QueueName
-
-        # Credenciales: el IAM Role que permite a API Gateway llamar a SQS
         Credentials: !GetAtt ApiGatewaySQSRoleSesion08.Arn
-
-        # RequestParameters: mapeo de parámetros de la request HTTP a SQS
         RequestParameters:
           integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
-
-        # RequestTemplates: plantilla VTL que transforma el body JSON a formato SQS
-        # SQS SendMessage necesita: Action=SendMessage&MessageBody={...}
         RequestTemplates:
           application/json: |
             Action=SendMessage&MessageBody=$util.urlEncode($input.body)
-
-        # Respuestas de integración: mapeamos el éxito de SQS a 202 Accepted
         IntegrationResponses:
           - StatusCode: 202
             ResponseTemplates:
@@ -288,14 +248,12 @@ Resources:
                   "queue": "msg-pipeline-queue-sesion-08",
                   "timestamp": "$context.requestTimeEpoch"
                 }
-
-      # Respuestas del método HTTP
       MethodResponses:
         - StatusCode: 202
           ResponseModels:
             application/json: Empty
 
-  # Deployment del API Gateway (necesario para que el stage quede activo)
+  # Deployment del API Gateway
   MsgPipelineApiDeploymentSesion08:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
@@ -303,16 +261,33 @@ Resources:
     Properties:
       RestApiId: !Ref MsgPipelineApiSesion08
 
-  # Stage del API Gateway
+  # ---------------------------------------------------------------------------
+  # 8. API Gateway Stage — FIX v2: logging activado SOLO después de configurar
+  #    AWS::ApiGateway::Account. DependsOn garantiza el orden correcto.
+  # ---------------------------------------------------------------------------
+  # CAUSA DEL ERROR ANTERIOR:
+  #   El Stage anterior intentaba activar LoggingLevel: INFO sin que existiera
+  #   el AWS::ApiGateway::Account con el CloudWatch Role ARN configurado.
+  #   CloudFormation no pudo crear el Stage → ROLLBACK de todo el stack.
+  #
+  # SOLUCIÓN APLICADA:
+  #   1. Se añadió ApiGatewayCloudWatchRoleSesion08 (IAM Role para CW)
+  #   2. Se añadió ApiGatewayAccountConfigSesion08 (AWS::ApiGateway::Account)
+  #   3. El Stage ahora tiene DependsOn: ApiGatewayAccountConfigSesion08
+  #      para garantizar que la cuenta esté configurada antes de crear el Stage.
+  # ---------------------------------------------------------------------------
   MsgPipelineApiStageSesion08:
     Type: AWS::ApiGateway::Stage
+    # CRÍTICO: el Stage debe crearse DESPUÉS de configurar la cuenta de API GW
+    DependsOn:
+      - ApiGatewayAccountConfigSesion08
     Properties:
       RestApiId: !Ref MsgPipelineApiSesion08
       DeploymentId: !Ref MsgPipelineApiDeploymentSesion08
       StageName: prod
       Description: Stage de producción - Sesión 08
-
-      # Logging de acceso en CloudWatch
+      # Logging activado — ahora funciona porque AWS::ApiGateway::Account
+      # ya configuró el CloudWatch Logs Role ARN a nivel de cuenta.
       MethodSettings:
         - ResourcePath: "/*"
           HttpMethod: "*"
@@ -321,55 +296,34 @@ Resources:
           DataTraceEnabled: false
 
   # ---------------------------------------------------------------------------
-  # 6. Lambda — msg-pipeline-processor-sesion-08
-  # ---------------------------------------------------------------------------
-  # CONCEPTO: AWS::Serverless::Function es un recurso SAM que genera
-  # automáticamente el AWS::Lambda::Function + IAM Role + Políticas + EventSourceMapping.
-  # SAM reduce ~100 líneas de CloudFormation a ~30 líneas de SAM.
+  # 9. Lambda — msg-pipeline-processor-sesion-08
   # ---------------------------------------------------------------------------
   MsgPipelineProcessorSesion08:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: msg-pipeline-processor-sesion-08
-
-      # El artefacto compilado: SAM busca el ZIP en CodeUri relativo a template.yaml
-      # Después de 'sam build', SAM reemplaza esto con la ruta del artefacto en S3
       CodeUri: build/distributions/msg-pipeline-processor-lambda.zip
-
       # Handler: clase completa + método
-      # com.msgpipeline.processor.ProcessorHandler = la clase
-      # handleRequest = el método del RequestHandler
       Handler: com.msgpipeline.processor.ProcessorHandler::handleRequest
-
-      # Variables de entorno específicas de esta Lambda
       Environment:
         Variables:
           DYNAMODB_TABLE_NAME: msg-pipeline-messages-sesion-08
-
-      # Políticas SAM: abstracciones de alto nivel que generan políticas IAM completas
-      # SQSPollerPolicy: permite a Lambda leer y eliminar mensajes de SQS
-      # DynamoDBWritePolicy: permite PutItem, UpdateItem, DeleteItem en la tabla
+      # SAM Policy Templates: abstracciones de alto nivel que generan políticas IAM
       Policies:
         - SQSPollerPolicy:
             QueueName: !GetAtt MsgPipelineQueueSesion08.QueueName
         - DynamoDBWritePolicy:
             TableName: !Ref MsgPipelineMessageTableSesion08
-
-      # EventSourceMapping: define cómo SQS dispara esta Lambda
       Events:
         SQSTrigger:
           Type: SQS
           Properties:
             Queue: !GetAtt MsgPipelineQueueSesion08.Arn
-            # BatchSize: número máximo de mensajes por invocación
-            # Con 1, cada mensaje genera una invocación separada.
-            # Para producción con alto volumen, usar 10 para eficiencia.
             BatchSize: 1
-            # Activado: el Event Source Mapping está activo desde el despliegue
             Enabled: true
 
 # =============================================================================
-# OUTPUTS — valores exportados para referencia y uso en otros stacks
+# OUTPUTS — valores exportados para referencia
 # =============================================================================
 Outputs:
   ApiEndpointSesion08:
@@ -401,3 +355,9 @@ Outputs:
     Value: !Ref MsgPipelineMessageTableSesion08
     Export:
       Name: MsgPipelineDynamoTableSesion08
+
+  CloudWatchRoleArnSesion08:
+    Description: "ARN del IAM Role de API Gateway para CloudWatch Logs"
+    Value: !GetAtt ApiGatewayCloudWatchRoleSesion08.Arn
+    Export:
+      Name: MsgPipelineApiGwCWRoleArnSesion08
