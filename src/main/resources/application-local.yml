@@ -1,0 +1,30 @@
+# =============================================================================
+# application-local.yml — Perfil de desarrollo local (macOS)
+# =============================================================================
+#
+# Activar con: ./gradlew bootRun --args='--spring.profiles.active=local'
+#
+# En este perfil:
+#   ✅ Servidor web Tomcat activo (puerto 8082)
+#   ✅ Swagger UI disponible en http://localhost:8082/swagger-ui.html
+#   ✅ Repositorio en memoria (no requiere AWS ni DynamoDB real)
+#   ✅ Logs detallados para debugging
+#
+# PATRÓN STRATEGY: En este perfil Spring inyecta InMemoryMessageRepository
+# en lugar de DynamoMessageRepository — el Use Case no sabe la diferencia.
+# =============================================================================
+
+spring:
+  main:
+    # SERVLET: arranca el servidor Tomcat embebido
+    # En Lambda usamos NONE (ver SqsHandler.java → bloque static)
+    web-application-type: servlet
+
+server:
+  port: 8082
+
+# Logging detallado para desarrollo
+logging:
+  level:
+    com.msgpipeline: DEBUG
+    org.springframework: INFO

@@ -1,0 +1,403 @@
+# =============================================================================
+# template.yaml — AWS SAM — msg-pipeline-processor-sesion-08
+# =============================================================================
+#
+# SESIÓN 08: SAM + S3 + GitHub Actions
+#
+# ARQUITECTURA IMPLEMENTADA:
+#   POST /messages-s8
+#       └─> API Gateway (Integración Nativa SendMessage)
+#           └─> SQS Cola Principal (msg-pipeline-queue-sesion-08)
+#               ├─> DLQ (msg-pipeline-dlq-sesion-08)  [maxReceiveCount=3]
+#               └─> Event Source Mapping
+#                   └─> Lambda: ProcessorHandler
+#                       └─> DynamoDB PutItem (msg-pipeline-messages-sesion-08)
+#
+# REGLA DE NOMENCLATURA: Todos los recursos físicos incluyen el sufijo "-sesion-08"
+#
+# DESPLIEGUE MANUAL (primera vez):
+#   sam build
+#   sam deploy --guided
+#
+# DESPLIEGUE AUTOMÁTICO: Gestionado por GitHub Actions (.github/workflows/deploy.yml)
+# =============================================================================
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  msg-pipeline-processor-sesion-08
+  Pipeline de mensajería serverless - SAM + GitHub Actions (Sesión 08)
+
+# =============================================================================
+# PARÁMETROS — valores configurables en el despliegue
+# =============================================================================
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [dev, prod]
+    Description: Entorno de despliegue
+
+  ArtifactsBucketName:
+    Type: String
+    Default: msg-pipeline-artifacts-629742034427
+    Description: Bucket S3 donde SAM sube los artefactos compilados
+
+# =============================================================================
+# GLOBALS — configuración compartida por todas las funciones Lambda
+# =============================================================================
+# SAM nos permite definir propiedades comunes una sola vez aquí.
+# Evita duplicar Timeout, MemorySize, etc. en cada función.
+Globals:
+  Function:
+    # Java + Spring Boot tienen Cold Start lento (~5-15s la primera vez).
+    # 60 segundos de timeout nos da margen suficiente para Cold Start + procesamiento.
+    # CRÍTICO: Si el Timeout es menor al Cold Start → TimeoutError desde el inicio.
+    Timeout: 60
+
+    # 512 MB es el mínimo recomendado para Spring Boot en Lambda.
+    # Con menos memoria, el JVM tiene poco espacio → Cold Start más lento
+    # y posibles OutOfMemoryError.
+    # Referencia: AWS recomienda >= 512 MB para apps Spring Boot.
+    MemorySize: 512
+
+    # Runtime de Java 17 (LTS compatible con Spring Boot 3.5)
+    Runtime: java17
+
+    # Arquitectura ARM64 (Graviton2): hasta 20% más rápido y 20% más barato que x86_64
+    # Spring Boot 3.x + Java 17 son totalmente compatibles con ARM64.
+    Architectures:
+      - arm64
+
+    # Variables de entorno comunes a todas las Lambdas
+    Environment:
+      Variables:
+        SPRING_PROFILES_ACTIVE: aws
+        AWS_REGION_NAME: !Ref AWS::Region
+
+# =============================================================================
+# RECURSOS
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # 1. DynamoDB — Tabla de mensajes
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: DynamoDB es una base de datos NoSQL totalmente administrada.
+  # No hay servidores que gestionar. AWS gestiona la disponibilidad,
+  # el escalado y la replicación automáticamente.
+  #
+  # IMPORTANTE: Creamos una tabla NUEVA con sufijo -sesion-08 para no
+  # interferir con las tablas de sesiones anteriores del curso.
+  # ---------------------------------------------------------------------------
+  MsgPipelineMessageTableSesion08:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      # Nombre físico del recurso en AWS — sufijo -sesion-08 obligatorio
+      TableName: msg-pipeline-messages-sesion-08
+
+      # Modo de facturación PAY_PER_REQUEST:
+      # No hay capacidad provisionada. AWS escala automáticamente.
+      # Perfecto para cargas variables y desarrollo (pagas solo por lo que usas).
+      BillingMode: PAY_PER_REQUEST
+
+      # Definición del esquema de la tabla
+      # DynamoDB es schemaless: solo el PK necesita estar definido aquí.
+      # Los demás atributos se agregan dinámicamente en el PutItem.
+      AttributeDefinitions:
+        - AttributeName: messageId
+          AttributeType: S  # S = String
+
+      # Partition Key (clave primaria simple)
+      # messageId es suficiente para identificar un mensaje unívocamente.
+      KeySchema:
+        - AttributeName: messageId
+          KeyType: HASH  # HASH = Partition Key
+
+      # TTL: DynamoDB elimina automáticamente los ítems cuyo campo 'ttl'
+      # (en segundos Unix epoch) sea menor al tiempo actual.
+      # Esto evita que la tabla crezca indefinidamente.
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ---------------------------------------------------------------------------
+  # 2. SQS — Dead Letter Queue (DLQ)
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: La DLQ captura los mensajes que no pudieron procesarse
+  # después de N reintentos. Es esencial para:
+  #   - No perder mensajes que fallaron
+  #   - Diagnosticar errores en producción
+  #   - Re-procesar mensajes después de corregir el bug
+  #
+  # ORDEN: La DLQ debe crearse ANTES de la cola principal porque
+  # la cola principal referencia la DLQ en su RedrivePolicy.
+  # ---------------------------------------------------------------------------
+  MsgPipelineDLQSesion08:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: msg-pipeline-dlq-sesion-08
+
+      # Los mensajes en la DLQ se retienen 14 días (máximo de SQS)
+      # para dar tiempo al equipo de analizar y re-procesar los fallos.
+      MessageRetentionPeriod: 1209600  # 14 días en segundos (14 * 24 * 3600)
+
+  # ---------------------------------------------------------------------------
+  # 3. SQS — Cola principal
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: SQS desacopla el API Gateway del Lambda.
+  # Ventajas del desacoplamiento:
+  #   - API Gateway responde inmediatamente (202 Accepted) sin esperar al Lambda
+  #   - Si Lambda falla, el mensaje se reintenta automáticamente
+  #   - Lambda puede procesar mensajes en batch para eficiencia
+  # ---------------------------------------------------------------------------
+  MsgPipelineQueueSesion08:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: msg-pipeline-queue-sesion-08
+
+      # VisibilityTimeout: tiempo que el mensaje "desaparece" de la cola
+      # mientras Lambda lo procesa. Debe ser >= Timeout de Lambda.
+      # Si Lambda tarda más, el mensaje vuelve a ser visible → reintento duplicado.
+      # Regla: VisibilityTimeout >= 6 * Lambda.Timeout
+      # 60s * 6 = 360s. Usamos 360s para estar seguros.
+      VisibilityTimeout: 360
+
+      # Retención de mensajes: 4 días (tiempo para corregir errores)
+      MessageRetentionPeriod: 345600  # 4 días en segundos
+
+      # RedrivePolicy: define el comportamiento de reintentos y la DLQ
+      RedrivePolicy:
+        # ARN de la DLQ donde van los mensajes que fallan
+        deadLetterTargetArn: !GetAtt MsgPipelineDLQSesion08.Arn
+
+        # maxReceiveCount: número máximo de intentos fallidos antes de
+        # mover el mensaje a la DLQ. Con 3, si el Lambda falla 3 veces
+        # consecutivas, el mensaje va a la DLQ para análisis.
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # 4. IAM Role — Permisos para API Gateway → SQS
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: En AWS, NINGÚN servicio puede hacer nada sin permisos explícitos.
+  # Principio de Menor Privilegio: solo dar los permisos estrictamente necesarios.
+  #
+  # Este Role permite que API Gateway llame a SQS:SendMessage.
+  # Sin este Role, API Gateway no podría enviar mensajes a SQS.
+  # ---------------------------------------------------------------------------
+  ApiGatewaySQSRoleSesion08:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: msg-pipeline-apigw-sqs-role-sesion-08
+
+      # AssumeRolePolicyDocument: define QUIÉN puede asumir este rol.
+      # Solo el servicio apigateway.amazonaws.com puede usarlo.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+      # Políticas inline: permisos que tiene este rol
+      Policies:
+        - PolicyName: AllowSQSSendMessage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage  # Solo SendMessage — principio de menor privilegio
+                Resource: !GetAtt MsgPipelineQueueSesion08.Arn
+
+  # ---------------------------------------------------------------------------
+  # 5. API Gateway — REST API con integración nativa a SQS
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: Integración Directa (AWS Service Integration)
+  # En lugar de Lambda → SQS, usamos API Gateway → SQS directamente.
+  # Ventajas:
+  #   - Elimina la Lambda intermediaria (reduce costos y latencia)
+  #   - API Gateway maneja la autenticación, throttling y CORS
+  #   - Menos puntos de fallo en la arquitectura
+  #
+  # ESTRUCTURA SAM para REST API con integración SQS:
+  # AWS::Serverless::Api no soporta directamente la integración AWS Service,
+  # por lo que usamos AWS::ApiGateway::* recursos nativos de CloudFormation.
+  # ---------------------------------------------------------------------------
+  MsgPipelineApiSesion08:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: msg-pipeline-api-sesion-08
+      Description: API Gateway con integración directa a SQS - Sesión 08
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # Recurso /messages-s8
+  MsgPipelineApiResourceSesion08:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MsgPipelineApiSesion08
+      ParentId: !GetAtt MsgPipelineApiSesion08.RootResourceId
+      PathPart: messages-s8
+
+  # Método POST /messages-s8 con integración directa a SQS
+  MsgPipelineApiMethodSesion08:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MsgPipelineApiSesion08
+      ResourceId: !Ref MsgPipelineApiResourceSesion08
+      HttpMethod: POST
+      AuthorizationType: NONE
+
+      # Integración tipo AWS: llama directamente a un servicio AWS (SQS)
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        # URI del endpoint SQS para enviar mensajes
+        # Formato: arn:aws:apigateway:{region}:sqs:path/{accountId}/{queueName}
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:sqs:path/${AWS::AccountId}/${QueueName}
+          - QueueName: !GetAtt MsgPipelineQueueSesion08.QueueName
+
+        # Credenciales: el IAM Role que permite a API Gateway llamar a SQS
+        Credentials: !GetAtt ApiGatewaySQSRoleSesion08.Arn
+
+        # RequestParameters: mapeo de parámetros de la request HTTP a SQS
+        RequestParameters:
+          integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+
+        # RequestTemplates: plantilla VTL que transforma el body JSON a formato SQS
+        # SQS SendMessage necesita: Action=SendMessage&MessageBody={...}
+        RequestTemplates:
+          application/json: |
+            Action=SendMessage&MessageBody=$util.urlEncode($input.body)
+
+        # Respuestas de integración: mapeamos el éxito de SQS a 202 Accepted
+        IntegrationResponses:
+          - StatusCode: 202
+            ResponseTemplates:
+              application/json: |
+                #set($body = $input.path('$'))
+                {
+                  "messageId": "$context.requestId",
+                  "status": "ACCEPTED",
+                  "message": "Mensaje encolado exitosamente",
+                  "queue": "msg-pipeline-queue-sesion-08",
+                  "timestamp": "$context.requestTimeEpoch"
+                }
+
+      # Respuestas del método HTTP
+      MethodResponses:
+        - StatusCode: 202
+          ResponseModels:
+            application/json: Empty
+
+  # Deployment del API Gateway (necesario para que el stage quede activo)
+  MsgPipelineApiDeploymentSesion08:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - MsgPipelineApiMethodSesion08
+    Properties:
+      RestApiId: !Ref MsgPipelineApiSesion08
+
+  # Stage del API Gateway
+  MsgPipelineApiStageSesion08:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref MsgPipelineApiSesion08
+      DeploymentId: !Ref MsgPipelineApiDeploymentSesion08
+      StageName: prod
+      Description: Stage de producción - Sesión 08
+
+      # Logging de acceso en CloudWatch
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: false
+
+  # ---------------------------------------------------------------------------
+  # 6. Lambda — msg-pipeline-processor-sesion-08
+  # ---------------------------------------------------------------------------
+  # CONCEPTO: AWS::Serverless::Function es un recurso SAM que genera
+  # automáticamente el AWS::Lambda::Function + IAM Role + Políticas + EventSourceMapping.
+  # SAM reduce ~100 líneas de CloudFormation a ~30 líneas de SAM.
+  # ---------------------------------------------------------------------------
+  MsgPipelineProcessorSesion08:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: msg-pipeline-processor-sesion-08
+
+      # El artefacto compilado: SAM busca el ZIP en CodeUri relativo a template.yaml
+      # Después de 'sam build', SAM reemplaza esto con la ruta del artefacto en S3
+      CodeUri: build/distributions/msg-pipeline-processor-lambda.zip
+
+      # Handler: clase completa + método
+      # com.msgpipeline.processor.ProcessorHandler = la clase
+      # handleRequest = el método del RequestHandler
+      Handler: com.msgpipeline.processor.ProcessorHandler::handleRequest
+
+      # Variables de entorno específicas de esta Lambda
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: msg-pipeline-messages-sesion-08
+
+      # Políticas SAM: abstracciones de alto nivel que generan políticas IAM completas
+      # SQSPollerPolicy: permite a Lambda leer y eliminar mensajes de SQS
+      # DynamoDBWritePolicy: permite PutItem, UpdateItem, DeleteItem en la tabla
+      Policies:
+        - SQSPollerPolicy:
+            QueueName: !GetAtt MsgPipelineQueueSesion08.QueueName
+        - DynamoDBWritePolicy:
+            TableName: !Ref MsgPipelineMessageTableSesion08
+
+      # EventSourceMapping: define cómo SQS dispara esta Lambda
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MsgPipelineQueueSesion08.Arn
+            # BatchSize: número máximo de mensajes por invocación
+            # Con 1, cada mensaje genera una invocación separada.
+            # Para producción con alto volumen, usar 10 para eficiencia.
+            BatchSize: 1
+            # Activado: el Event Source Mapping está activo desde el despliegue
+            Enabled: true
+
+# =============================================================================
+# OUTPUTS — valores exportados para referencia y uso en otros stacks
+# =============================================================================
+Outputs:
+  ApiEndpointSesion08:
+    Description: "URL del endpoint POST /messages-s8"
+    Value: !Sub "https://${MsgPipelineApiSesion08}.execute-api.${AWS::Region}.amazonaws.com/prod/messages-s8"
+    Export:
+      Name: MsgPipelineApiEndpointSesion08
+
+  QueueUrlSesion08:
+    Description: "URL de la cola SQS principal"
+    Value: !Ref MsgPipelineQueueSesion08
+    Export:
+      Name: MsgPipelineQueueUrlSesion08
+
+  DLQUrlSesion08:
+    Description: "URL de la Dead Letter Queue"
+    Value: !Ref MsgPipelineDLQSesion08
+    Export:
+      Name: MsgPipelineDLQUrlSesion08
+
+  LambdaFunctionArnSesion08:
+    Description: "ARN de la función Lambda"
+    Value: !GetAtt MsgPipelineProcessorSesion08.Arn
+    Export:
+      Name: MsgPipelineLambdaArnSesion08
+
+  DynamoTableNameSesion08:
+    Description: "Nombre de la tabla DynamoDB"
+    Value: !Ref MsgPipelineMessageTableSesion08
+    Export:
+      Name: MsgPipelineDynamoTableSesion08

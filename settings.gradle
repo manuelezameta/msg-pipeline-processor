@@ -1,0 +1,3 @@
+// settings.gradle — nombre del proyecto Gradle
+// Este nombre aparece en los logs de build y en el artefacto generado.
+rootProject.name = 'msg-pipeline-processor'
