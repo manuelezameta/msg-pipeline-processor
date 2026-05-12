@@ -1,0 +1,6 @@
+# ENV: DYNAMODB_TABLE_NAME, SNS_TOPIC_ARN, EVENT_BUS_NAME
+# IAM: DynamoDB + SNS + EventBridge Full Access
+# Trigger: SQS ESM --> msg-pipeline-queue-sesion-07 (batchSize=1)
+logging:
+  level:
+    com.msgpipeline: INFO

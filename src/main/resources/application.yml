@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: msg-pipeline-processor-sesion-07
+app:
+  aws:
+    region: ${AWS_REGION_NAME:us-east-1}
+    dynamodb-table: ${DYNAMODB_TABLE_NAME:msg-pipeline-messages}
+    sns-topic-arn: ${SNS_TOPIC_ARN:}
+    event-bus-name: ${EVENT_BUS_NAME:msg-pipeline-events-sesion-07}
+  processor:
+    ttl-days: 30
+logging:
+  level:
+    com.msgpipeline: INFO
+    software.amazon.awssdk: WARN
