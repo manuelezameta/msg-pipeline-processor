@@ -37,7 +37,7 @@ name: Deploy msg-pipeline-processor-sesion-08
 on:
   push:
     branches:
-      - main
+      - sesion-08
     # Opcional: activar solo cuando cambian archivos relevantes
     # paths:
     #   - 'src/**'
