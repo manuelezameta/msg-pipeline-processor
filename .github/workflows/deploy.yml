@@ -190,7 +190,54 @@ jobs:
       - name: 🔨 SAM Build
         run: sam build --template template.yaml
 
-      # ── Paso 11: sam deploy ──────────────────────────────────────────────────
+      # ── Paso 11: Limpiar stack en ROLLBACK_COMPLETE ─────────────────────────
+      # PROBLEMA: Si el despliegue anterior falló y CloudFormation hizo rollback,
+      # el stack queda en estado ROLLBACK_COMPLETE. En ese estado CloudFormation
+      # rechaza cualquier intento de update/deploy con el error:
+      #   "Stack is in ROLLBACK_COMPLETE state and can not be updated"
+      #
+      # SOLUCIÓN: Detectar ese estado y eliminar el stack ANTES de sam deploy.
+      # CloudFormation eliminará todos los recursos del rollback (ya eliminados
+      # por el propio rollback) y dejará el camino libre para crear el stack nuevo.
+      #
+      # LÓGICA DEL SCRIPT:
+      #   1. Consultar el estado actual del stack (puede no existir → error ignorado)
+      #   2. Si el estado es ROLLBACK_COMPLETE → eliminar y esperar hasta que desaparezca
+      #   3. Si el stack no existe o tiene otro estado → no hacer nada
+      - name: 🧹 Limpiar stack en ROLLBACK_COMPLETE (si aplica)
+        run: |
+          echo "Consultando estado del stack: ${{ env.SAM_STACK_NAME }}"
+
+          # Obtener el estado actual del stack.
+          # Si el stack no existe, aws cloudformation describe-stacks devuelve error →
+          # asignamos cadena vacía con || true para no fallar el pipeline.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NO_EXISTE")
+
+          echo "Estado actual del stack: $STACK_STATUS"
+
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+            echo "⚠️  Stack en ROLLBACK_COMPLETE — eliminando para permitir nuevo despliegue..."
+
+            aws cloudformation delete-stack \
+              --stack-name ${{ env.SAM_STACK_NAME }}
+
+            echo "Esperando eliminación completa del stack..."
+            aws cloudformation wait stack-delete-complete \
+              --stack-name ${{ env.SAM_STACK_NAME }}
+
+            echo "✅ Stack eliminado. sam deploy creará uno nuevo desde cero."
+
+          elif [ "$STACK_STATUS" = "NO_EXISTE" ]; then
+            echo "ℹ️  Stack no existe — sam deploy lo creará desde cero."
+
+          else
+            echo "✅ Stack en estado '$STACK_STATUS' — no se requiere limpieza previa."
+          fi
+
+      # ── Paso 12: sam deploy ──────────────────────────────────────────────────
       # CONCEPTO: 'sam deploy' realiza el despliegue en AWS:
       #   1. Sube el artefacto ZIP al bucket S3 (ArtifactsBucketName)
       #   2. Crea o actualiza el CloudFormation Stack
@@ -222,7 +269,7 @@ jobs:
               "Curso=SpringBoot-AWS-Serverless" \
               "ManagedBy=GitHubActions"
 
-      # ── Paso 12: Mostrar los Outputs del stack ───────────────────────────────
+      # ── Paso 13: Mostrar los Outputs del stack ───────────────────────────────
       # CloudFormation Outputs contienen las URLs y ARNs de los recursos creados.
       # Útil para saber la URL del API Gateway después del despliegue.
       - name: 📋 Mostrar Outputs del Stack
@@ -233,7 +280,7 @@ jobs:
             --query "Stacks[0].Outputs" \
             --output table
 
-      # ── Paso 13 (opcional): Notificación de éxito ────────────────────────────
+      # ── Paso 14 (opcional): Notificación de éxito ────────────────────────────
       # En un proyecto real, aquí se enviaría una notificación a Slack/Teams.
       - name: ✅ Despliegue exitoso
         run: |
