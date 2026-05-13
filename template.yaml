@@ -28,7 +28,7 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: >
   msg-pipeline-processor-sesion-08
-  Pipeline de mensajería serverless - SAM + GitHub Actions (Sesión 08)
+  Pipeline de mensajeria serverless - SAM + GitHub Actions (Sesion 08)
 
 # =============================================================================
 # PARÁMETROS — valores configurables en el despliegue
