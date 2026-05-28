@@ -53,7 +53,7 @@ import java.util.UUID;
 @Slf4j
 @RestController
 @Profile("local")
-@RequestMapping("/api/v1/messages")
+@RequestMapping("/api/v1/messages-s3")
 @RequiredArgsConstructor
 @Tag(name = "Procesador de Mensajes",
      description = "Endpoints para probar localmente el procesador SQS → DynamoDB. " +
