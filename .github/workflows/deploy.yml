@@ -1,50 +1,19 @@
 # =============================================================================
-# deploy.yml — GitHub Actions CI/CD Pipeline 
+# deploy.yml — GitHub Actions CI/CD Pipeline
 # =============================================================================
-#
 # SESIÓN 08: SAM + S3 + GitHub Actions
 # PROYECTO: msg-pipeline-processor-sesion-08
 #
-# FLUJO COMPLETO:
-#   Push a rama 'main'
-#   └─> Checkout del código
-#       └─> Configurar credenciales AWS via OIDC (sin access keys)
-#           └─> Setup Java 17 + Gradle
-#               └─> Compilar y generar ZIP (./gradlew buildZip)
-#                   └─> sam build
-#                       └─> sam deploy (a S3 + Lambda + API Gateway)
-#
-# SEGURIDAD — OIDC (OpenID Connect):
-#   En lugar de guardar AWS_ACCESS_KEY_ID y AWS_SECRET_ACCESS_KEY como secrets
-#   (que son credenciales de larga duración y representan un riesgo de seguridad),
-#   usamos OIDC. GitHub Actions obtiene un token JWT temporal de GitHub y lo
-#   intercambia con AWS STS por credenciales temporales (válidas ~1 hora).
-#   ZERO access keys estáticas en el repositorio.
-#
-# PRERREQUISITOS (configurar una sola vez en AWS + GitHub):
-#   1. Identity Provider OIDC en AWS IAM (token.actions.githubusercontent.com)
-#   2. IAM Role con política de confianza hacia GitHub Actions
-#   3. Secrets en el repositorio GitHub:
-#      - AWS_ROLE_ARN: ARN del IAM Role creado en el paso 2
-#      - AWS_REGION: us-east-1
-#      - SAM_BUCKET: msg-pipeline-artifacts-629742034427
+# FIX: Se añade Paso 5 "Crear bucket S3 si no existe" para que el pipeline
+# sea completamente autocontenido y no requiera ningún paso manual previo.
 # =============================================================================
 
 name: Deploy msg-pipeline-processor-sesion-08
 
-# TRIGGER: El pipeline se activa solo con push a la rama 'main'.
-# Evitamos deploys accidentales desde ramas de desarrollo.
 on:
   push:
     branches:
       - sesion-08
-    # Opcional: activar solo cuando cambian archivos relevantes
-    # paths:
-    #   - 'src/**'
-    #   - 'template.yaml'
-    #   - 'build.gradle'
-
-  # Permite ejecutar el pipeline manualmente desde la UI de GitHub Actions
   workflow_dispatch:
     inputs:
       environment:
@@ -56,41 +25,28 @@ on:
           - prod
           - dev
 
-# PERMISOS: Define exactamente qué puede hacer este pipeline.
-# id-token: write → necesario para el flujo OIDC (solicitar el JWT de GitHub)
-# contents: read  → necesario para hacer checkout del código
 permissions:
-  id-token: write  # CRÍTICO: sin este permiso, OIDC no funciona
+  id-token: write
   contents: read
 
-# Variables de entorno globales disponibles en todos los pasos
 env:
   JAVA_VERSION: '17'
-  DISTRIBUTION: 'temurin'  # Eclipse Temurin (anteriormente AdoptOpenJDK)
+  DISTRIBUTION: 'temurin'
   SAM_STACK_NAME: 'msg-pipeline-stack-sesion-08'
 
 jobs:
-  # ===========================================================================
-  # JOB: deploy — Compilar y desplegar en AWS
-  # ===========================================================================
   deploy:
     name: Build & Deploy to AWS
-    runs-on: ubuntu-latest  # Runner de GitHub (Ubuntu 22.04 LTS)
+    runs-on: ubuntu-latest
 
     steps:
       # ── Paso 1: Checkout ────────────────────────────────────────────────────
-      # Descarga el código del repositorio en el runner de GitHub.
-      # fetch-depth: 0 descarga todo el historial (necesario para algunos análisis).
       - name: 📥 Checkout del código
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ── Paso 2: Configurar Java 17 ──────────────────────────────────────────
-      # Instala el JDK 17 en el runner.
-      # 'temurin' es la distribución OpenJDK de Eclipse Foundation (gratuita y LTS).
-      # cache: 'gradle' almacena en caché las dependencias de Gradle entre ejecuciones,
-      # reduciendo el tiempo de build de ~3 min a ~30 segundos después del primer run.
       - name: ☕ Configurar Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
@@ -99,61 +55,62 @@ jobs:
           cache: 'gradle'
 
       # ── Paso 3: Configurar credenciales AWS via OIDC ────────────────────────
-      # CONCEPTO OIDC:
-      #   1. GitHub Actions genera un JWT firmado por GitHub (token de identidad)
-      #   2. aws-actions/configure-aws-credentials envía ese JWT a AWS STS
-      #   3. AWS STS valida el JWT contra el Identity Provider OIDC registrado
-      #   4. AWS STS devuelve credenciales temporales (Access Key + Secret + Session Token)
-      #   5. Las credenciales temporales expiran en ~1 hora (seguras por naturaleza)
-      #
-      # VENTAJA vs Access Keys estáticas:
-      #   - Sin credenciales de larga duración en secrets de GitHub
-      #   - Si el runner se compromete, las credenciales expiran pronto
-      #   - El role-to-assume define exactamente qué puede hacer el pipeline
       - name: 🔐 Configurar credenciales AWS (OIDC - Sin Access Keys)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # ARN del IAM Role que el pipeline va a asumir
-          # Configurado en GitHub Secrets → Settings → Secrets and variables → Actions
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-
-          # Región AWS donde se desplegará la aplicación
           aws-region: ${{ secrets.AWS_REGION }}
-
-          # Tiempo de validez de las credenciales temporales (segundos)
-          # 3600 = 1 hora, suficiente para compilar y desplegar
           role-duration-seconds: 3600
-
-          # Nombre de la sesión (aparece en los logs de CloudTrail para auditoría)
           role-session-name: GitHubActions-msg-pipeline-sesion-08
 
       # ── Paso 4: Verificar conexión con AWS ──────────────────────────────────
-      # Paso de diagnóstico: confirma que las credenciales OIDC funcionan.
-      # Si este paso falla, hay un problema con el Role ARN o el Identity Provider.
       - name: 🔍 Verificar identidad AWS
         run: aws sts get-caller-identity
 
-      # ── Paso 5: Permisos de ejecución para gradlew ──────────────────────────
-      # En Linux/macOS, los archivos ejecutables necesitan permisos de ejecución.
-      # Git no siempre preserva estos permisos al hacer checkout en Windows.
-      # Este paso garantiza que gradlew sea ejecutable en el runner Ubuntu.
+      # ── Paso 5: Crear bucket S3 si no existe ────────────────────────────────
+      # CONCEPTO: SAM necesita un bucket S3 para subir los artefactos compilados
+      # (el ZIP de Lambda y el template procesado) ANTES de crear el stack de
+      # CloudFormation. SAM no crea el bucket automáticamente — si no existe,
+      # falla con "S3 Bucket does not exist".
+      #
+      # SOLUCIÓN AUTOCONTENIDA: Este paso verifica si el bucket existe usando
+      # "aws s3api head-bucket". Si devuelve error (bucket no existe) → lo crea.
+      # Si ya existe → no hace nada. Esto hace el pipeline idempotente: funciona
+      # tanto en el primer deploy como en todos los siguientes.
+      #
+      # NOTA: head-bucket falla con error si el bucket no existe → el "|| " captura
+      # ese error y ejecuta el comando de creación.
+      - name: 🪣 Crear bucket S3 de artefactos si no existe
+        run: |
+          BUCKET="${{ secrets.SAM_BUCKET }}"
+          REGION="${{ secrets.AWS_REGION }}"
+
+          echo "Verificando si existe el bucket: $BUCKET"
+
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "✅ El bucket ya existe — no se requiere creación"
+          else
+            echo "🔧 Bucket no encontrado — creando $BUCKET en $REGION..."
+            aws s3 mb "s3://$BUCKET" --region "$REGION"
+
+            # Bloquear acceso público por seguridad (buena práctica)
+            aws s3api put-public-access-block \
+              --bucket "$BUCKET" \
+              --public-access-block-configuration \
+                "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+            echo "✅ Bucket $BUCKET creado y asegurado correctamente"
+          fi
+
+      # ── Paso 6: Permisos de ejecución para gradlew ──────────────────────────
       - name: 🔑 Dar permisos de ejecución a gradlew
         run: chmod +x gradlew
 
-      # ── Paso 6: Compilar y generar artefacto ────────────────────────────────
-      # CONCEPTO: El buildZip de Gradle genera el ZIP con el formato correcto para Lambda:
-      #   - Clases del proyecto en la raíz del ZIP
-      #   - Dependencias en la carpeta lib/ (sin descomprimir)
-      #
-      # --no-daemon: deshabilita el Gradle Daemon en CI (el daemon está optimizado
-      # para desarrollo local con builds repetidos, no para CI con builds únicos).
-      # Sin --no-daemon, el daemon a veces queda en estado inconsistente en CI.
+      # ── Paso 7: Compilar y generar artefacto ZIP ────────────────────────────
       - name: 🏗️ Compilar con Gradle y generar ZIP Lambda
         run: ./gradlew clean buildZip --no-daemon --stacktrace
 
-      # ── Paso 7: Verificar artefacto generado ────────────────────────────────
-      # Verifica que el ZIP fue generado correctamente antes de continuar.
-      # Un ZIP corrupto o vacío causaría un error críptico en sam deploy.
+      # ── Paso 8: Verificar artefacto generado ────────────────────────────────
       - name: 📦 Verificar artefacto ZIP
         run: |
           ls -lh build/distributions/
@@ -164,53 +121,27 @@ jobs:
           echo "✅ ZIP generado correctamente"
           unzip -l build/distributions/msg-pipeline-processor-lambda.zip | head -20
 
-      # ── Paso 8: Instalar AWS SAM CLI ────────────────────────────────────────
-      # El runner de GitHub Ubuntu no incluye SAM CLI por defecto.
-      # Instalamos la versión más reciente disponible en pip.
-      # Alternativa: usar la GitHub Action oficial de AWS: aws-actions/setup-sam
+      # ── Paso 9: Instalar AWS SAM CLI ────────────────────────────────────────
       - name: 📦 Instalar AWS SAM CLI
         uses: aws-actions/setup-sam@v2
         with:
           use-installer: true
 
-      # ── Paso 9: Verificar SAM CLI ────────────────────────────────────────────
+      # ── Paso 10: Verificar SAM CLI ───────────────────────────────────────────
       - name: 🔍 Verificar versión de SAM CLI
         run: sam --version
 
-      # ── Paso 10: sam build ──────────────────────────────────────────────────
-      # CONCEPTO: 'sam build' prepara el artefacto para el despliegue.
-      # Para Java con buildZip (no nativo), sam build principalmente:
-      #   1. Lee el template.yaml y valida la sintaxis
-      #   2. Copia el artefacto al directorio .aws-sam/build/
-      #   3. Prepara los metadatos para sam deploy
-      #
-      # --use-container: compila dentro de un contenedor Docker con el runtime
-      # de Lambda (java17). Garantiza compatibilidad binaria.
-      # Para JARs pre-compilados con buildZip, no es necesario pero es buena práctica.
+      # ── Paso 11: sam build ──────────────────────────────────────────────────
       - name: 🔨 SAM Build
         run: sam build --template template.yaml
 
-      # ── Paso 11: Limpiar stack en ROLLBACK_COMPLETE ─────────────────────────
-      # PROBLEMA: Si el despliegue anterior falló y CloudFormation hizo rollback,
-      # el stack queda en estado ROLLBACK_COMPLETE. En ese estado CloudFormation
-      # rechaza cualquier intento de update/deploy con el error:
-      #   "Stack is in ROLLBACK_COMPLETE state and can not be updated"
-      #
-      # SOLUCIÓN: Detectar ese estado y eliminar el stack ANTES de sam deploy.
-      # CloudFormation eliminará todos los recursos del rollback (ya eliminados
-      # por el propio rollback) y dejará el camino libre para crear el stack nuevo.
-      #
-      # LÓGICA DEL SCRIPT:
-      #   1. Consultar el estado actual del stack (puede no existir → error ignorado)
-      #   2. Si el estado es ROLLBACK_COMPLETE → eliminar y esperar hasta que desaparezca
-      #   3. Si el stack no existe o tiene otro estado → no hacer nada
+      # ── Paso 12: Limpiar stack en ROLLBACK_COMPLETE ─────────────────────────
+      # Si un deploy anterior falló, CloudFormation deja el stack en
+      # ROLLBACK_COMPLETE. Ese estado no admite updates → hay que eliminarlo.
       - name: 🧹 Limpiar stack en ROLLBACK_COMPLETE (si aplica)
         run: |
           echo "Consultando estado del stack: ${{ env.SAM_STACK_NAME }}"
 
-          # Obtener el estado actual del stack.
-          # Si el stack no existe, aws cloudformation describe-stacks devuelve error →
-          # asignamos cadena vacía con || true para no fallar el pipeline.
           STACK_STATUS=$(aws cloudformation describe-stacks \
             --stack-name ${{ env.SAM_STACK_NAME }} \
             --query "Stacks[0].StackStatus" \
@@ -219,37 +150,17 @@ jobs:
           echo "Estado actual del stack: $STACK_STATUS"
 
           if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-            echo "⚠️  Stack en ROLLBACK_COMPLETE — eliminando para permitir nuevo despliegue..."
-
-            aws cloudformation delete-stack \
-              --stack-name ${{ env.SAM_STACK_NAME }}
-
-            echo "Esperando eliminación completa del stack..."
-            aws cloudformation wait stack-delete-complete \
-              --stack-name ${{ env.SAM_STACK_NAME }}
-
-            echo "✅ Stack eliminado. sam deploy creará uno nuevo desde cero."
-
+            echo "⚠️  Stack en ROLLBACK_COMPLETE — eliminando..."
+            aws cloudformation delete-stack --stack-name ${{ env.SAM_STACK_NAME }}
+            aws cloudformation wait stack-delete-complete --stack-name ${{ env.SAM_STACK_NAME }}
+            echo "✅ Stack eliminado. sam deploy creará uno nuevo."
           elif [ "$STACK_STATUS" = "NO_EXISTE" ]; then
             echo "ℹ️  Stack no existe — sam deploy lo creará desde cero."
-
           else
-            echo "✅ Stack en estado '$STACK_STATUS' — no se requiere limpieza previa."
+            echo "✅ Stack en estado '$STACK_STATUS' — sin limpieza necesaria."
           fi
 
-      # ── Paso 12: sam deploy ──────────────────────────────────────────────────
-      # CONCEPTO: 'sam deploy' realiza el despliegue en AWS:
-      #   1. Sube el artefacto ZIP al bucket S3 (ArtifactsBucketName)
-      #   2. Crea o actualiza el CloudFormation Stack
-      #   3. CloudFormation crea/actualiza los recursos (Lambda, SQS, DynamoDB, etc.)
-      #   4. Espera a que el stack termine (COMPLETE o ROLLBACK)
-      #
-      # --no-confirm-changeset: no pide confirmación interactiva (requerido en CI)
-      # --no-fail-on-empty-changeset: no falla si no hay cambios (idempotente)
-      # --capabilities CAPABILITY_IAM: autoriza a CloudFormation crear roles IAM
-      # --capabilities CAPABILITY_NAMED_IAM: autoriza nombres personalizados en roles IAM
-      #   (necesario porque nuestros roles tienen nombres explícitos como
-      #    msg-pipeline-apigw-sqs-role-sesion-08)
+      # ── Paso 13: sam deploy ──────────────────────────────────────────────────
       - name: 🚀 SAM Deploy
         run: |
           sam deploy \
@@ -269,9 +180,7 @@ jobs:
               "Curso=SpringBoot-AWS-Serverless" \
               "ManagedBy=GitHubActions"
 
-      # ── Paso 13: Mostrar los Outputs del stack ───────────────────────────────
-      # CloudFormation Outputs contienen las URLs y ARNs de los recursos creados.
-      # Útil para saber la URL del API Gateway después del despliegue.
+      # ── Paso 14: Mostrar los Outputs del stack ───────────────────────────────
       - name: 📋 Mostrar Outputs del Stack
         run: |
           echo "=== Outputs del Stack CloudFormation ==="
@@ -280,8 +189,7 @@ jobs:
             --query "Stacks[0].Outputs" \
             --output table
 
-      # ── Paso 14 (opcional): Notificación de éxito ────────────────────────────
-      # En un proyecto real, aquí se enviaría una notificación a Slack/Teams.
+      # ── Paso 15: Notificación de éxito ────────────────────────────────────────
       - name: ✅ Despliegue exitoso
         run: |
           echo "🎉 Despliegue de msg-pipeline-processor-sesion-08 completado"
