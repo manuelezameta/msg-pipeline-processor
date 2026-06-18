@@ -349,4 +349,4 @@ static {
 
 ---
 
-*Anku Academy — Especialista Spring Boot + AWS Serverless 2026C3*
+*Anku Academy — Especialista Spring Boot + AWS Serverless 2026C4*
