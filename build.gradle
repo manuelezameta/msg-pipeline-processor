@@ -35,8 +35,8 @@ version = '1.0.0'
 
 // Java 17 — LTS, requerido por Spring Boot 3.x
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_23
+    targetCompatibility = JavaVersion.VERSION_23
 }
 
 configurations {
