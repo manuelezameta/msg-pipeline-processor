@@ -54,9 +54,9 @@ public class DynamoConfig {
      */
     @Bean
     public DynamoDbClient dynamoDbClient() {
-        log.info("Inicializando DynamoDbClient [region=us-east-1] [tabla={}]", dynamodbTable);
+        log.info("Inicializando DynamoDbClient [region=us-east-2] [tabla={}]", dynamodbTable);
         return DynamoDbClient.builder()
-                .region(Region.US_EAST_1)
+                .region(Region.US_EAST_2)
                 // Credenciales: IAM Role del Lambda (automático)
                 // No especificamos credenciales explícitas → AWS SDK las toma del rol
                 .build();
