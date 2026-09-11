@@ -21,7 +21,7 @@ public class DynamoConfig {
     public DynamoDbClient dynamoDbClient() {
         log.info("Inicializando DynamoDbClient [tabla={}]", dynamodbTable);
         return DynamoDbClient.builder()
-                .region(Region.US_EAST_1)
+                .region(Region.US_EAST_2)
                 .build();
     }
 

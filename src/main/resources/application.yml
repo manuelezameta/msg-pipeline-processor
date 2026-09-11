@@ -16,7 +16,7 @@ spring:
 
 app:
   aws:
-    region: ${AWS_REGION_NAME:us-east-1}
+    region: ${AWS_REGION_NAME:us-east-2}
     dynamodb-table: ${DYNAMODB_TABLE_NAME:msg-pipeline-messages}
     sns-topic-arn: ${SNS_TOPIC_ARN:}
 

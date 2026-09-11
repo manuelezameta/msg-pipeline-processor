@@ -20,9 +20,9 @@ public class AppConfig {
 
     @Data
     public static class Aws {
-        private String region = "us-east-1";
+        private String region = "us-east-2";
         private String dynamodbTable = "msg-pipeline-messages";
-        private String snsTopicArn = "";
+        private String snsTopicArn = "arn:aws:sns:us-east-2:279341438040:msg-pipeline-email-notifications-sesion-06";
     }
 
     @Data
