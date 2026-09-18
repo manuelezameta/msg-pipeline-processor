@@ -32,7 +32,7 @@ public class SnsNotificationAdapter implements NotificationPort {
 
     static {
         snsClient = SnsClient.builder()
-                .region(Region.US_EAST_1)
+                .region(Region.US_EAST_2)
                 .build();
     }
 
