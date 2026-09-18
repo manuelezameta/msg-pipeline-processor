@@ -61,7 +61,7 @@ Globals:
     MemorySize: 512
 
     # Runtime de Java 17 (LTS compatible con Spring Boot 3.5)
-    Runtime: java17
+    Runtime: java25
 
     # Arquitectura ARM64 (Graviton2): hasta 20% más rápido y 20% más barato que x86_64
     Architectures:

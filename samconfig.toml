@@ -10,4 +10,4 @@ parameter_overrides = "Environment=\"prod\" ArtifactsBucketName=\"msg-pipeline-a
 image_repositories = []
 
 [default.global.parameters]
-region = "us-east-1"
+region = "us-east-2"

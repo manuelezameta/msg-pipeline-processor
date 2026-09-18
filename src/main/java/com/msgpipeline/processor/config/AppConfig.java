@@ -65,7 +65,7 @@ public class AppConfig {
          * Default: 'us-east-1' (región del curso)
          * En Lambda: se obtiene de la variable de entorno AWS_REGION
          */
-        private String region = "us-east-1";
+        private String region = "us-east-2";
 
         /**
          * Nombre de la tabla DynamoDB donde se persisten los mensajes.
