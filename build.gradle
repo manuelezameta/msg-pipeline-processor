@@ -13,7 +13,7 @@
 //
 // TAREAS CLAVE:
 //   ./gradlew bootRun --args='--spring.profiles.active=local'  → dev local
-//   ./gradlew clean buildZip                                    → deploy Lambda
+//   ./gradlew clean buildZip                                    → deploy Lambda - test
 //
 // =============================================================================
 
