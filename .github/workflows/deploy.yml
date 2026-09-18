@@ -46,8 +46,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ── Paso 2: Configurar Java 17 ──────────────────────────────────────────
-      - name: ☕ Configurar Java 17 (Temurin)
+      # ── Paso 2: Configurar Java 25 ──────────────────────────────────────────
+      - name: ☕ Configurar Java 25 (Temurin)
         uses: actions/setup-java@v4
         with:
           java-version: ${{ env.JAVA_VERSION }}
