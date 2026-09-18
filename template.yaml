@@ -20,7 +20,7 @@
 #   sam build
 #   sam deploy --guided
 #
-# DESPLIEGUE AUTOMÁTICO: Gestionado por GitHub Actions (.github/workflows/deploy.yml)
+# DESPLIEGUE AUTOMÁTICO: Gestionado por GitHub Actions (.github/workflows/deploy2.yml)
 # =============================================================================
 
 AWSTemplateFormatVersion: '2010-09-09'
